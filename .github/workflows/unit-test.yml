@@ -1,10 +1,6 @@
 name: Unit Tests
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-  merge_group:
+  workflow_dispatch:
 
 jobs:
   node-tests:
@@ -16,21 +12,27 @@ jobs:
           - "16"
           - "18"
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       NPM_CONFIG_UNSAFE_PERM: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v3
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node_version }}
 
-      - run: npm install -g npm@latest
+      - name: Pin npm registry to release date
+        run: npm config set registry "https://:2023-03-20T16%3A10%3A35.925000Z@time-machines-npm.sealsecurity.io/"
+
+      - name: Pin npm for legacy Node
+        if: matrix.node_version == '14' || matrix.node_version == '16'
+        run: npm install -g npm@"<10.0.0"
 
       - name: restore lerna
         id: cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             node_modules
@@ -51,32 +53,54 @@ jobs:
           npm run compile
 
       - name: Unit tests
+        shell: bash
         run: |
+          set -o pipefail
           # TODO(legendecas): webpack https://stackoverflow.com/questions/69692842/error-message-error0308010cdigital-envelope-routinesunsupported
           if [ "${{ matrix.node_version }}" = "18" ]; then
             export NODE_OPTIONS=--openssl-legacy-provider
           fi
-          npm run test
-      - name: Report Coverage
-        run: npm run codecov
-        if: ${{ matrix.node_version == '14' }}
+          npm run test 2>&1 | tee test-output.log
+          sed 's/\x1b\[[0-9;]*m//g' test-output.log | awk 'match($0, /[0-9]+ passing/) {split(substr($0, RSTART, RLENGTH), a, " "); s+=a[1]; n++} END {printf "TEST SUMMARY: %d tests passing across %d mocha suites\n", s, n}'
+          sed 's/\x1b\[[0-9;]*m//g' test-output.log | awk 'match($0, /[0-9]+ failing/) {split(substr($0, RSTART, RLENGTH), a, " "); s+=a[1]} END {printf "TEST SUMMARY: %d tests failing\n", s}'
+
+      - name: Pack @opentelemetry/exporter-prometheus
+        if: matrix.node_version == '18'
+        working-directory: ./experimental/packages/opentelemetry-exporter-prometheus
+        run: |
+          mkdir -p "${{ github.workspace }}/dist-artifacts"
+          npm pack --ignore-scripts --pack-destination="${{ github.workspace }}/dist-artifacts"
+          mv "${{ github.workspace }}/dist-artifacts/opentelemetry-exporter-prometheus-0.36.1.tgz" "${{ github.workspace }}/dist-artifacts/exporter-prometheus-0.36.1.tgz"
+
+      - name: Upload artifact
+        if: matrix.node_version == '18'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exporter-prometheus-0.36.1-tgz
+          path: dist-artifacts/exporter-prometheus-0.36.1.tgz
+          if-no-files-found: error
   node-windows-tests:
     runs-on: windows-latest
+    timeout-minutes: 45
     env:
       NPM_CONFIG_UNSAFE_PERM: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v3
+      - uses: actions/setup-node@v4
         with:
           node-version: '16'
 
-      - run: npm install -g npm@latest
+      - name: Pin npm registry to release date
+        run: npm config set registry "https://:2023-03-20T16%3A10%3A35.925000Z@time-machines-npm.sealsecurity.io/"
+
+      - name: Pin npm for legacy Node
+        run: npm install -g npm@9
 
       - name: restore lerna
         id: cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             node_modules
@@ -98,22 +122,31 @@ jobs:
           npm run compile
 
       - name: Unit tests
-        run: npm run test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run test 2>&1 | tee test-output.log
+          sed 's/\x1b\[[0-9;]*m//g' test-output.log | awk 'match($0, /[0-9]+ passing/) {split(substr($0, RSTART, RLENGTH), a, " "); s+=a[1]; n++} END {printf "TEST SUMMARY: %d tests passing across %d mocha suites\n", s, n}'
+          sed 's/\x1b\[[0-9;]*m//g' test-output.log | awk 'match($0, /[0-9]+ failing/) {split(substr($0, RSTART, RLENGTH), a, " "); s+=a[1]} END {printf "TEST SUMMARY: %d tests failing\n", s}'
   browser-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       NPM_CONFIG_UNSAFE_PERM: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v3
+      - uses: actions/setup-node@v4
         with:
           node-version: 16
 
+      - name: Pin npm registry to release date
+        run: npm config set registry "https://:2023-03-20T16%3A10%3A35.925000Z@time-machines-npm.sealsecurity.io/"
+
       - name: restore lerna
         id: cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             node_modules
@@ -134,23 +167,29 @@ jobs:
           npm run compile
 
       - name: Unit tests
-        run: npm run test:browser
-      - name: Report Coverage
-        run: npm run codecov:browser
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run test:browser 2>&1 | tee test-output.log
+          sed 's/\x1b\[[0-9;]*m//g' test-output.log | awk 'match($0, /Executed [0-9]+ of [0-9]+.*SUCCESS \(/) {split(substr($0, RSTART, RLENGTH), a, " "); s+=a[2]; t+=a[4]; n++} END {printf "TEST SUMMARY: %d of %d karma tests executed successfully across %d suites\n", s, t, n}'
   webworker-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       NPM_CONFIG_UNSAFE_PERM: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v3.0.2
-      - uses: actions/setup-node@v3
+        uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 16
 
+      - name: Pin npm registry to release date
+        run: npm config set registry "https://:2023-03-20T16%3A10%3A35.925000Z@time-machines-npm.sealsecurity.io/"
+
       - name: restore lerna
         id: cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             node_modules
@@ -171,9 +210,11 @@ jobs:
           npm run compile
 
       - name: Unit tests
-        run: npm run test:webworker
-      - name: Report Coverage
-        run: npm run codecov:webworker
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run test:webworker 2>&1 | tee test-output.log
+          sed 's/\x1b\[[0-9;]*m//g' test-output.log | awk 'match($0, /Executed [0-9]+ of [0-9]+.*SUCCESS \(/) {split(substr($0, RSTART, RLENGTH), a, " "); s+=a[2]; t+=a[4]; n++} END {printf "TEST SUMMARY: %d of %d karma tests executed successfully across %d suites\n", s, t, n}'
   api-eol-node-test:
     strategy:
       fail-fast: false
@@ -183,13 +224,17 @@ jobs:
           - "10"
           - "12"
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v3
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node_version }}
+
+      - name: Pin npm registry to release date
+        run: npm config set registry "https://:2023-03-20T16%3A10%3A35.925000Z@time-machines-npm.sealsecurity.io/"
 
       - name: Build
         working-directory: ./api
@@ -197,8 +242,13 @@ jobs:
           npm install --ignore-scripts
           npm install @types/mocha@^7 mocha@^7 ts-loader@^8 ts-mocha@^8
           node ../scripts/version-update.js
-          tsc --build tsconfig.json tsconfig.esm.json
+          ./node_modules/.bin/tsc --build tsconfig.json tsconfig.esm.json
 
       - name: Test
         working-directory: ./api
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.log
+          sed 's/\x1b\[[0-9;]*m//g' test-output.log | awk 'match($0, /[0-9]+ passing/) {split(substr($0, RSTART, RLENGTH), a, " "); s+=a[1]; n++} END {printf "TEST SUMMARY: %d tests passing across %d mocha suites\n", s, n}'
+          sed 's/\x1b\[[0-9;]*m//g' test-output.log | awk 'match($0, /[0-9]+ failing/) {split(substr($0, RSTART, RLENGTH), a, " "); s+=a[1]} END {printf "TEST SUMMARY: %d tests failing\n", s}'
